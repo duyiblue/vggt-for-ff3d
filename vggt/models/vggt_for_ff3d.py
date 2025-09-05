@@ -45,7 +45,7 @@ class VGGT_For_FF3D(nn.Module, PyTorchModelHubMixin):
         # Treat NOCS prediction as a hybrid classification + regression task.
         # First classify the bin, then refine the offset within the bin.
         self.nocs_classification_head = DPTHead(dim_in = 2 * embed_dim,
-                                                output_dim = nocs_num_bins + 1,
+                                                output_dim = 3 * nocs_num_bins + 1,
                                                 activation = "linear",  # Use linear for logits, will apply cross entropy loss in the training script
                                                 conf_activation = "expp1")
         # Offset head for continuous refinement within bins
@@ -72,18 +72,23 @@ class VGGT_For_FF3D(nn.Module, PyTorchModelHubMixin):
         Args:
             images (torch.Tensor): Input images with shape [B, 3, H, W], in range [0, 1].
                 B: batch size, 3: RGB channels, H: height, W: width
-            query_points (torch.Tensor, optional): Query points for tracking, in pixel coordinates.
-                Shape: [N, 2] or [B, N, 2], where N is the number of query points.
-                Default: None
 
         Returns:
             dict: A dictionary containing the following predictions:
-                - pose_enc (torch.Tensor): Camera pose encoding with shape [B, S, 9] (from the last iteration)
-                - depth (torch.Tensor): Predicted depth maps with shape [B, S, 1, H, W]
-                - depth_conf (torch.Tensor): Confidence scores for depth predictions with shape [B, S, H, W]
-                - world_points (torch.Tensor): 3D world coordinates for each pixel with shape [B, S, 3, H, W]
-                - world_points_conf (torch.Tensor): Confidence scores for world points with shape [B, S, H, W]
-                - images (torch.Tensor): Original input images, preserved for visualization
+                - depth (torch.Tensor): Predicted depth maps with shape [B, 1, H, W]
+                - depth_conf (torch.Tensor): Confidence scores for depth predictions with shape [B, H, W]
+                - semantic (torch.Tensor): Semantic label predictions with shape [B, semantic_label_dim, H, W]
+                - semantic_conf (torch.Tensor): Confidence scores for semantic predictions with shape [B, H, W]
+                - nocs_bins (torch.Tensor): NOCS bin classifications with shape [B, 3 * nocs_num_bins, H, W]
+                - nocs_bins_conf (torch.Tensor): Confidence scores for NOCS bins with shape [B, H, W]
+                - nocs_offsets (torch.Tensor): NOCS offset regressions with shape [B, 3, H, W]
+                - nocs_offsets_conf (torch.Tensor): Confidence scores for NOCS offsets with shape [B, H, W]
+                - gaussian_basic (torch.Tensor): Basic Gaussian parameters with shape [B, k * 11, H, W]
+                - gaussian_basic_conf (torch.Tensor): Confidence scores for basic Gaussians with shape [B, H, W]
+                - gaussian_sh (torch.Tensor): Spherical harmonics Gaussian parameters with shape [B, k * 3 * ((sh_degree + 1) ** 2), H, W]
+                - gaussian_sh_conf (torch.Tensor): Confidence scores for SH Gaussians with shape [B, H, W]
+            
+            Note: All outputs are in channel-first format and have sequence dimension removed (originally [B, 1, ...] reduced to [B, ...]).
         """
         if len(images.shape) != 4 or images.shape[1] != 3:
             raise ValueError(f"Input images must have shape [B, 3, H, W], but got {images.shape}")
@@ -119,7 +124,7 @@ class VGGT_For_FF3D(nn.Module, PyTorchModelHubMixin):
                 nocs_bins, nocs_bins_conf = self.nocs_classification_head(
                     aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
                 )
-                predictions["nocs_bins"] = nocs_bins  # [B, 1, nocs_num_bins, H, W]
+                predictions["nocs_bins"] = nocs_bins  # [B, 1, 3 * nocs_num_bins, H, W]
                 predictions["nocs_bins_conf"] = nocs_bins_conf  # [B, 1, H, W]
             
             if self.nocs_regression_head is not None:
