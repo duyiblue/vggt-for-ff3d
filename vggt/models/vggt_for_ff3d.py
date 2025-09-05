@@ -54,6 +54,10 @@ class VGGT_For_FF3D(nn.Module, PyTorchModelHubMixin):
                                             activation = "linear",  # Unbounded offset. This is the simplest approach. Could try other activations in the future.
                                             conf_activation = "expp1")
 
+        self.mesh_head = DPTHead(dim_in = 2 * embed_dim,
+                                 output_dim = 3 + 1,
+                                 activation = "sigmoid",  # Because the GT is a normalized mesh color in range [0, 1], we use sigmoid to ensure the output is in the same range.
+                                 conf_activation = "expp1")
 
         self.gaussian_basic_head = DPTHead(dim_in = 2 * embed_dim,
                                            output_dim = k * 11 + 1,  # 11 channels for mean(3) + scale(3) + rotation(4) + opacity(1)
@@ -83,6 +87,8 @@ class VGGT_For_FF3D(nn.Module, PyTorchModelHubMixin):
                 - nocs_bins_conf (torch.Tensor): Confidence scores for NOCS bins with shape [B, H, W]
                 - nocs_offsets (torch.Tensor): NOCS offset regressions with shape [B, 3, H, W]
                 - nocs_offsets_conf (torch.Tensor): Confidence scores for NOCS offsets with shape [B, H, W]
+                - mesh_rgb (torch.Tensor): Mesh RGB colors with shape [B, 3, H, W], values in range [0, 1]
+                - mesh_rgb_conf (torch.Tensor): Confidence scores for mesh RGB with shape [B, H, W]
                 - gaussian_basic (torch.Tensor): Basic Gaussian parameters with shape [B, k * 11, H, W]
                 - gaussian_basic_conf (torch.Tensor): Confidence scores for basic Gaussians with shape [B, H, W]
                 - gaussian_sh (torch.Tensor): Spherical harmonics Gaussian parameters with shape [B, k * 3 * ((sh_degree + 1) ** 2), H, W]
@@ -133,6 +139,13 @@ class VGGT_For_FF3D(nn.Module, PyTorchModelHubMixin):
                 )
                 predictions["nocs_offsets"] = nocs_offsets  # [B, 1, 3, H, W]
                 predictions["nocs_offsets_conf"] = nocs_offsets_conf  # [B, 1, H, W]
+            
+            if self.mesh_head is not None:
+                mesh_rgb, mesh_rgb_conf = self.mesh_head(
+                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
+                )
+                predictions["mesh_rgb"] = mesh_rgb  # [B, 1, 3, H, W]
+                predictions["mesh_rgb_conf"] = mesh_rgb_conf  # [B, 1, H, W]
             
             if self.gaussian_basic_head is not None:
                 gaussian_basic, gaussian_basic_conf = self.gaussian_basic_head(
