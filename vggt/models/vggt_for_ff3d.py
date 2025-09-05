@@ -141,11 +141,11 @@ class VGGT_For_FF3D(nn.Module, PyTorchModelHubMixin):
                 predictions["nocs_offsets_conf"] = nocs_offsets_conf  # [B, 1, H, W]
             
             if self.mesh_head is not None:
-                mesh_rgb, mesh_rgb_conf = self.mesh_head(
+                mesh, mesh_conf = self.mesh_head(
                     aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
                 )
-                predictions["mesh_rgb"] = mesh_rgb  # [B, 1, 3, H, W]
-                predictions["mesh_rgb_conf"] = mesh_rgb_conf  # [B, 1, H, W]
+                predictions["mesh"] = mesh  # [B, 1, 3, H, W]
+                predictions["mesh_conf"] = mesh_conf  # [B, 1, H, W]
             
             if self.gaussian_basic_head is not None:
                 gaussian_basic, gaussian_basic_conf = self.gaussian_basic_head(
