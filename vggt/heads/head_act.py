@@ -68,21 +68,19 @@ def activate_head(out, activation="norm_exp", conf_activation="expp1"):
         conf_activation: Activation type for confidence values
 
     Returns:
-        Tuple of (3D points tensor, confidence tensor)
+        Tuple of (3D points tensor, confidence tensor) both in channel-first format (B, C, H, W)
     """
-    # Move channels from last dim to the 4th dimension => (B, H, W, C)
-    fmap = out.permute(0, 2, 3, 1)  # B,H,W,C expected
-
+    # Keep channel-first format (B, C, H, W)
     # Split into xyz (first C-1 channels) and confidence (last channel)
-    xyz = fmap[:, :, :, :-1]
-    conf = fmap[:, :, :, -1]
+    xyz = out[:, :-1]  # (B, C-1, H, W)
+    conf = out[:, -1]  # (B, H, W)
 
     if activation == "norm_exp":
-        d = xyz.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        d = xyz.norm(dim=1, keepdim=True).clamp(min=1e-8)  # (B, 1, H, W)
         xyz_normed = xyz / d
         pts3d = xyz_normed * torch.expm1(d)
     elif activation == "norm":
-        pts3d = xyz / xyz.norm(dim=-1, keepdim=True)
+        pts3d = xyz / xyz.norm(dim=1, keepdim=True)
     elif activation == "exp":
         pts3d = torch.exp(xyz)
     elif activation == "relu":
@@ -90,9 +88,14 @@ def activate_head(out, activation="norm_exp", conf_activation="expp1"):
     elif activation == "inv_log":
         pts3d = inverse_log_transform(xyz)
     elif activation == "xy_inv_log":
-        xy, z = xyz.split([2, 1], dim=-1)
+        # This activation is designed for 3D points: xy coordinates and z depth
+        # Split into xy (first 2 channels) and z (last channel, assuming 3 total)
+        if xyz.shape[1] != 3:
+            raise ValueError(f"xy_inv_log activation expects 3 channels (x, y, z), got {xyz.shape[1]}")
+        xy = xyz[:, :2]   # (B, 2, H, W) - x, y coordinates
+        z = xyz[:, 2:3]   # (B, 1, H, W) - z depth
         z = inverse_log_transform(z)
-        pts3d = torch.cat([xy * z, z], dim=-1)
+        pts3d = torch.cat([xy * z, z], dim=1)  # Concat on channel dimension
     elif activation == "sigmoid":
         pts3d = torch.sigmoid(xyz)
     elif activation == "linear":

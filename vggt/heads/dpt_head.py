@@ -132,7 +132,7 @@ class DPTHead(nn.Module):
         Returns:
             Tensor or Tuple[Tensor, Tensor]:
                 - If feature_only=True: Feature maps with shape [B, S, C, H, W]
-                - Otherwise: Tuple of (predictions, confidence) both with shape [B, S, 1, H, W]
+                - Otherwise: Tuple of (predictions, confidence) with shapes [B, S, C-1, H, W] and [B, S, H, W]
         """
         B, S, _, H, W = images.shape
 

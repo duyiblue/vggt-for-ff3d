@@ -4,6 +4,13 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+Note:
+This is the original VGGT model from https://github.com/facebookresearch/vggt.
+We modified the model for our project. The modified version is in vggt_for_ff3d.py.
+This file is NOT used in our project. We keep it here for reference.
+"""
+
 import torch
 import torch.nn as nn
 from huggingface_hub import PyTorchModelHubMixin  # used for model hub
@@ -40,9 +47,9 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         Returns:
             dict: A dictionary containing the following predictions:
                 - pose_enc (torch.Tensor): Camera pose encoding with shape [B, S, 9] (from the last iteration)
-                - depth (torch.Tensor): Predicted depth maps with shape [B, S, H, W, 1]
+                - depth (torch.Tensor): Predicted depth maps with shape [B, S, 1, H, W] -- NOTE: This is different from the original VGGT's channel-last format.
                 - depth_conf (torch.Tensor): Confidence scores for depth predictions with shape [B, S, H, W]
-                - world_points (torch.Tensor): 3D world coordinates for each pixel with shape [B, S, H, W, 3]
+                - world_points (torch.Tensor): 3D world coordinates for each pixel with shape [B, S, 3, H, W] -- NOTE: This is different from the original VGGT's channel-last format.
                 - world_points_conf (torch.Tensor): Confidence scores for world points with shape [B, S, H, W]
                 - images (torch.Tensor): Original input images, preserved for visualization
 

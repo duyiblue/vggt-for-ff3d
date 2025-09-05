@@ -24,6 +24,12 @@
 }
 ```
 
+## Changes from the FF3D team
+
+- We created a new model `VGGT_FOR_FF3D`, stored in `vggt/models/vggt_for_ff3d.py`. It serves as an alternative to the original `VGGT` model in `vggt/models/vggt.py`. Our model uses components from the original codebase, such as `Aggregator` and `DPTHead`. The major difference is that we added different DPT decoder heads for our tasks.
+
+- The original VGGT model converts output tensors to "channel-last" format (i.e., `[B, S, H, W, C]`) in the last step (in `head_act.py`), although all operations before that were in "channel-first" format (i.e., `[B, S, C, H, W]`). Because channel-first format is more efficient and widely-adopted, we modified the code to use channel-first format throughout, including the returned results. Training, demo, visualization, and geometry utilities are not modified, so the codebase is inconsistent now, but we don't use these parts anyway.
+
 ## Updates
 
 - [July 29, 2025] We've updated the license for VGGT to permit **commercial use** (excluding military applications). All code in this repository is now under a commercial-use-friendly license. However, only the newly released checkpoint [**VGGT-1B-Commercial**](https://huggingface.co/facebook/VGGT-1B-Commercial) is licensed for commercial usage — the original checkpoint remains non-commercial. Full license details are available [here](https://github.com/facebookresearch/vggt/blob/main/LICENSE.txt). Access to the checkpoint requires completing an application form, which is processed by a system similar to LLaMA's approval workflow, automatically. The new checkpoint delivers similar performance to the original model. Please submit an issue if you notice a significant performance discrepancy.
