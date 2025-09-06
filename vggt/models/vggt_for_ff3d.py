@@ -62,12 +62,14 @@ class VGGT_For_FF3D(nn.Module, PyTorchModelHubMixin):
         self.gaussian_basic_head = DPTHead(dim_in = 2 * embed_dim,
                                            output_dim = k * 11 + 1,  # 11 channels for mean(3) + scale(3) + rotation(4) + opacity(1)
                                            activation = "linear",
-                                           conf_activation = "expp1")
+                                           conf_activation = "expp1",
+                                           final_upsample_mode = "pixelshuffle")
         
         self.gaussian_sh_head = DPTHead(dim_in = 2 * embed_dim,
                                         output_dim = k * 3 * ((sh_degree + 1) ** 2) + 1,  # k Gaussians, each have 3 (RGB) channels
                                         activation = "linear",
-                                        conf_activation = "expp1")
+                                        conf_activation = "expp1",
+                                        final_upsample_mode = "pixelshuffle")
 
     def forward(self, images: torch.Tensor):
         """

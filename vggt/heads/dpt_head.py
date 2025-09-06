@@ -37,7 +37,9 @@ class DPTHead(nn.Module):
         intermediate_layer_idx (List[int], optional): Indices of layers from aggregated tokens used for DPT.
         pos_embed (bool, optional): Whether to use positional embedding. Default is True.
         feature_only (bool, optional): If True, return features only without the last several layers and activation head. Default is False.
-        down_ratio (int, optional): Downscaling factor for the output resolution. Default is 1.
+        final_upsample_mode (str, optional): Final upsampling strategy before the last conv. One of {"bilinear", "pixelshuffle", "convtranspose"}. Default: "bilinear".
+        post_upsample_layers (int, optional): Number of 3x3 conv blocks after upsampling (before the 1x1 to output). Default: 1 (keeps previous behavior).
+        post_upsample_width (int, optional): Channel width for the post-upsampling conv blocks. Default: 32.
     """
 
     def __init__(
@@ -52,7 +54,9 @@ class DPTHead(nn.Module):
         intermediate_layer_idx: List[int] = [4, 11, 17, 23],
         pos_embed: bool = True,
         feature_only: bool = False,
-        down_ratio: int = 1,
+        final_upsample_mode: str = "bilinear",
+        post_upsample_layers: int = 1,
+        post_upsample_width: int = 32,
     ) -> None:
         super(DPTHead, self).__init__()
         self.patch_size = patch_size
@@ -60,8 +64,18 @@ class DPTHead(nn.Module):
         self.conf_activation = conf_activation
         self.pos_embed = pos_embed
         self.feature_only = feature_only
-        self.down_ratio = down_ratio
         self.intermediate_layer_idx = intermediate_layer_idx
+
+        # Final upsampling configuration
+        self.final_upsample_mode = final_upsample_mode.lower()
+        if self.final_upsample_mode not in ["bilinear", "pixelshuffle", "convtranspose"]:
+            raise ValueError(f"final_upsample_mode must be one of {'bilinear','pixelshuffle','convtranspose'}, got {self.final_upsample_mode}")
+
+        # Post-upsampling head capacity configuration
+        self.post_upsample_layers = int(post_upsample_layers)
+        self.post_upsample_width = int(post_upsample_width)
+        if self.post_upsample_layers < 1:
+            raise ValueError("post_upsample_layers must be >= 1")
 
         self.norm = nn.LayerNorm(dim_in)
 
@@ -96,7 +110,6 @@ class DPTHead(nn.Module):
         self.scratch.refinenet4 = _make_fusion_block(features, has_residual=False)
 
         head_features_1 = features
-        head_features_2 = 32
 
         if feature_only:
             self.scratch.output_conv1 = nn.Conv2d(head_features_1, head_features_1, kernel_size=3, stride=1, padding=1)
@@ -106,11 +119,43 @@ class DPTHead(nn.Module):
             )
             conv2_in_channels = head_features_1 // 2
 
-            self.scratch.output_conv2 = nn.Sequential(
-                nn.Conv2d(conv2_in_channels, head_features_2, kernel_size=3, stride=1, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(head_features_2, output_dim, kernel_size=1, stride=1, padding=0),
-            )
+            # Build learnable final upsamplers that map exactly from (4H/7,4W/7) to (H,W) in general as (8/patch_size)*H -> H
+            # General rational factor = patch_size / 8: up by L=patch_size, then down by M=8.
+            L = self.patch_size
+            M = 8
+
+            if (L % 2) == 0 and (M % 2) == 0:
+                L = L // 2
+                M = M // 2
+
+            if self.final_upsample_mode == "pixelshuffle":
+                # Up by L via PixelShuffle, then down by M via strided conv. No padding/cropping.
+                self.final_upsampler_up = nn.Sequential(
+                    nn.Conv2d(conv2_in_channels, conv2_in_channels * (L * L), kernel_size=1, stride=1, padding=0),
+                    nn.PixelShuffle(L),
+                )
+                self.final_upsampler_down = nn.Conv2d(conv2_in_channels, conv2_in_channels, kernel_size=M, stride=M, padding=0)
+            elif self.final_upsample_mode == "convtranspose":
+                # Up by L using ConvTranspose2d with stride=L, kernel=L (exact Lx scaling), then down by M using stride-M conv.
+                self.final_upsampler_up = nn.ConvTranspose2d(conv2_in_channels, conv2_in_channels, kernel_size=L, stride=L, padding=0, output_padding=0)
+                self.final_upsampler_down = nn.Conv2d(conv2_in_channels, conv2_in_channels, kernel_size=M, stride=M, padding=0)
+            else:
+                self.final_upsampler_up = None
+                self.final_upsampler_down = None  # bilinear path uses functional interpolate
+
+            # Build post-upsampling head with configurable depth/width
+            post_blocks: List[nn.Module] = []
+            hidden = self.post_upsample_width
+            # First 3x3
+            post_blocks.append(nn.Conv2d(conv2_in_channels, hidden, kernel_size=3, stride=1, padding=1))
+            post_blocks.append(nn.ReLU(inplace=True))
+            # Additional (post_upsample_layers-1) 3x3 blocks
+            for _ in range(self.post_upsample_layers - 1):
+                post_blocks.append(nn.Conv2d(hidden, hidden, kernel_size=3, stride=1, padding=1))
+                post_blocks.append(nn.ReLU(inplace=True))
+            # Final 1x1 to output_dim
+            post_blocks.append(nn.Conv2d(hidden, output_dim, kernel_size=1, stride=1, padding=0))
+            self.scratch.output_conv2 = nn.Sequential(*post_blocks)
 
     def forward(
         self,
@@ -197,6 +242,9 @@ class DPTHead(nn.Module):
 
         B, S, _, H, W = images.shape
 
+        if H % self.patch_size != 0 or W % self.patch_size != 0:
+            raise ValueError(f"H and W must be divisible by patch_size, got {H} and {W} for patch_size {self.patch_size}")
+
         patch_h, patch_w = H // self.patch_size, W // self.patch_size
 
         out = []
@@ -225,13 +273,13 @@ class DPTHead(nn.Module):
 
         # Fuse features from multiple layers.
         out = self.scratch_forward(out)
-        # Interpolate fused output to match target image resolution.
-        out = custom_interpolate(
-            out,
-            (int(patch_h * self.patch_size / self.down_ratio), int(patch_w * self.patch_size / self.down_ratio)),
-            mode="bilinear",
-            align_corners=True,
-        )
+        
+        current_H, current_W = out.shape[-2], out.shape[-1]
+        assert current_H == H * 8 // self.patch_size
+        assert current_W == W * 8 // self.patch_size
+
+        # Final upsampling to (H, W) using the configured strategy (does not affect fusion blocks)
+        out = self._final_upsample_to(out, H, W)
 
         if self.pos_embed:
             out = self._apply_pos_embed(out, W, H)
@@ -245,6 +293,24 @@ class DPTHead(nn.Module):
         preds = preds.view(B, S, *preds.shape[1:])
         conf = conf.view(B, S, *conf.shape[1:])
         return preds, conf
+
+    def _final_upsample_to(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
+        """
+        Upsample feature map x to target spatial size (H, W) using the configured final upsample mode.
+        Only affects the very last upsampling before the prediction head.
+        Input x has spatial size approximately (8 * H / patch_size, 8 * W / patch_size).
+        """
+        if self.final_upsample_mode == "bilinear":
+            # Exact resize to (H, W)
+            return custom_interpolate(x, (H, W), mode="bilinear", align_corners=True)
+
+        # Learnable rational resampling: up by L (PixelShuffle/ConvTranspose), then down by M (stride conv).
+        if self.final_upsample_mode in ("pixelshuffle", "convtranspose"):
+            x = self.final_upsampler_up(x)
+            x = self.final_upsampler_down(x)
+            return x.contiguous()
+
+        raise RuntimeError("Unsupported final_upsample_mode")
 
     def _apply_pos_embed(self, x: torch.Tensor, W: int, H: int, ratio: float = 0.1) -> torch.Tensor:
         """
